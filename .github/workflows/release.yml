@@ -1,0 +1,47 @@
+name: Release
+on:
+  push:
+    branches: [main]
+    paths: ['Update-TCJBMM.ps1', 'TC-JBMM-Updater.ini', '更新TC_JBMM字型.bat']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 打包
+        run: |
+          ver=$(grep -m1 -o 'v[0-9][0-9.]*' Update-TCJBMM.ps1)
+          [ -n "$ver" ] || { echo "::error::讀不到版本號"; exit 1; }
+          echo "VER=$ver" >> "$GITHUB_ENV"
+          # 用 Python zipfile：中文檔名會標 UTF-8 旗標（runner 的 zip 指令會變成 #Uxxxx）
+          python3 - <<'PY'
+          import zipfile
+          files = ['Update-TCJBMM.ps1', 'TC-JBMM-Updater.ini', '更新TC_JBMM字型.bat', 'README.md', 'LICENSE']
+          with zipfile.ZipFile('TC-JBMM-Updater.zip', 'w', zipfile.ZIP_DEFLATED) as z:
+              for f in files:
+                  z.write(f, 'TC-JBMM-Updater/' + f)
+          print(*zipfile.ZipFile('TC-JBMM-Updater.zip').namelist(), sep='\n')
+          PY
+      - name: 發佈（tag＝版本號；同版本重跑就覆蓋 zip）
+        run: |
+          title="TC-JetBrainsMapleMono 字型更新工具 ${VER}"
+          notes="下載 TC-JBMM-Updater.zip，解壓後雙擊「更新TC_JBMM字型.bat」。使用說明見 README。"
+          delays=(5 15 30 60)
+          for i in 1 2 3 4 5; do
+            if gh release view "$VER" >/dev/null 2>&1; then
+              gh release edit "$VER" --title "$title" && gh release upload "$VER" TC-JBMM-Updater.zip --clobber && exit 0
+            else
+              gh release create "$VER" TC-JBMM-Updater.zip --target "$GITHUB_SHA" --title "$title" --notes "$notes" && exit 0
+            fi
+            [ "$i" -eq 5 ] && { echo "::error::發佈失敗（重試 5 次）"; exit 1; }
+            d=${delays[$((i-1))]}; echo "第 ${i} 次失敗，${d} 秒後重試"; sleep "$d"
+          done
